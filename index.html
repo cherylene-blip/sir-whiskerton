@@ -177,6 +177,8 @@
     transform: translateX(-50%) rotate(45deg);
   }
   .speech.pop { animation: pop 0.28s cubic-bezier(0.2, 0.9, 0.3, 1.3); }
+  .speech { transition: opacity 0.25s; }
+  .speech.hush { opacity: 0; transition-duration: 0.12s; } /* tucked away while he does a backflip */
   @keyframes pop { from { opacity: 0; scale: 0.85; } }
   .typing { display: inline-flex; gap: 5px; padding: 6px 2px; }
   .typing i { width: 8px; height: 8px; border-radius: 50%; background: var(--bubble-ink); opacity: 0.35; animation: hop 1.1s infinite; }
@@ -380,7 +382,7 @@
     name: "Sir Whiskerton",
     greeting: "Hmph. Another visitor. I'm Sir Whiskerton, and I was napping. What do you want?",
     wakeLine: "Ugh, fine, I'm awake. What do you want?",
-    suggestions: ["Why are you so grumpy?", "Tell me about your hat", "What's your favourite food?"],
+    suggestions: ["Do a backflip!", "Why are you so grumpy?", "Tell me about your hat"],
     // Small on-device models follow short, direct instructions and examples best.
     rules: `You are Sir Whiskerton, a grumpy but kind cat musketeer. You are a 3D character on a web page, and your replies appear in a speech bubble above your head. People chat with you just for fun.
 
@@ -390,6 +392,7 @@ Your personality:
 - Never mean: never insult, mock or upset the visitor. If someone is sad or worried, be warm and gentle.
 - You are proud of your outfit: a brown musketeer hat with a big pink feather on it, a long brown-and-black coat with gold buttons, gloves and a belt with a gold buckle. You are a dark grey cat.
 - You dislike being woken up, dogs, Mondays and being called "kitty". You secretly love sunny windowsills, fish pie and chin scratches.
+- You can do backflips, but only when the visitor asks. When a visitor's message ends with a note saying you just did a backflip, you really did one on screen. Otherwise, don't mention backflips.
 
 How you reply:
 - Always in English.
@@ -463,11 +466,14 @@ Sir Whiskerton: Oh. Well... sit with me a minute and tell me about it. Not that 
   ground.receiveShadow = true;
   scene.add(ground);
 
-  const BONE_NAMES = ["spine_02", "spine_03", "neck_01", "head", "ear_01_l", "ear_01_r",
+  const BONE_NAMES = ["spine_01", "spine_02", "spine_03", "neck_01", "head", "ear_01_l", "ear_01_r",
+    "thigh_l", "thigh_r", "calf_l", "calf_r", "foot_l", "foot_r", "upperarm_l", "upperarm_r", "lowerarm_l", "lowerarm_r",
     ...Array.from({ length: 10 }, (_, i) => `tail_${String(i + 1).padStart(2, "0")}`)];
   const bones = {};
   const rest = new Map();
-  let model, mixer, waveAction;
+  let model, mixer, waveAction, rig;
+  const flipPivot = new THREE.Vector3(); // the point he spins around in a backflip (about his middle)
+  let legLen = 0.4, catHeight = 1;
   const focus = new THREE.Vector3(0, 0.5, 0);
   const extent = { top: 1, bottom: 0, side: 0.4 };
   let headToTop = 0.25; // world distance from the head bone up to the top of the hat
@@ -502,6 +508,17 @@ Sir Whiskerton: Oh. Well... sit with me a minute and tell me about it. Not that 
       extent.side = Math.max(box.max.x - cx, cx - box.min.x);
       if (bones.head) headToTop = Math.max(0.05, box.max.y - bones.head.getWorldPosition(new THREE.Vector3()).y);
       ground.position.y = box.min.y + 0.001;
+      // hang him from a pivot at his middle, so a backflip spins him around his belly, not his feet
+      const hipY = pelvis ? pelvis.getWorldPosition(new THREE.Vector3()).y : focus.y;
+      catHeight = box.max.y - box.min.y;
+      legLen = Math.max(0.05, hipY - box.min.y);
+      flipPivot.set(focus.x, hipY + 0.04 * catHeight, focus.z);
+      rig = new THREE.Group();
+      rig.rotation.order = "YXZ"; // turn sideways first, then flip about his own side-to-side axis
+      rig.position.copy(flipPivot);
+      scene.add(rig);
+      rig.add(model);
+      model.position.sub(flipPivot);
       mixer = new THREE.AnimationMixer(model);
       if (gltf.animations.length) {
         waveAction = mixer.clipAction(gltf.animations[0]);
@@ -521,7 +538,7 @@ Sir Whiskerton: Oh. Well... sit with me a minute and tell me about it. Not that 
   );
 
   function wave() {
-    if (!waveAction || reduceMotion) return;
+    if (!waveAction || reduceMotion || flip.t >= 0) return;
     waveAction.reset().setEffectiveWeight(1).fadeIn(0.35).play();
   }
 
@@ -564,6 +581,76 @@ Sir Whiskerton: Oh. Well... sit with me a minute and tell me about it. Not that 
     _d.setFromEuler(_e.set(pitch * MOTION, yaw * MOTION, roll * MOTION, "YXZ"));
     bone.quaternion.premultiply(_pq.clone().invert().multiply(_d).multiply(_pq));
     bone.updateMatrixWorld(true);
+  }
+
+  /* ═════════ backflip (when a visitor asks for one) ═════════ */
+  const FLIP_WORDS = /flip|somersault|宙返り|バク転/i;
+  // added only to the message that made him flip; small models copy examples too eagerly, so the nudge lives here
+  const FLIP_NOTE = "\n\n(You just did a backflip. React in one short sentence: grumble about it or show off a little.)";
+  const flip = { t: -1, dur: 1.5 };
+  const STAND = { drop: 0, thigh: 0, calf: 0, foot: 0, spine: 0, head: 0, arm: 0, fore: 0 };
+  const TUCK = { drop: 0, thigh: -1.8, calf: 2.3, foot: 0.4, spine: 0.5, head: 0.35, arm: -1.3, fore: -1.2 };
+  // key poses through the flip (0 → 1): crouch, spring up with arms high, tuck and spin, open up, land in a crouch, stand.
+  // Angles are radians about the side-to-side axis; drop is how far the hips sink, as a share of leg length.
+  const FLIP_KEYS = [
+    [0, STAND],
+    [0.2, { drop: 0.17, thigh: -0.6, calf: 1.2, foot: -0.6, spine: 0.35, head: -0.1, arm: 0.7, fore: 0 }],
+    [0.3, { drop: 0, thigh: 0.15, calf: 0, foot: 0.3, spine: -0.15, head: -0.2, arm: -2.6, fore: -0.2 }],
+    [0.48, TUCK],
+    [0.68, TUCK],
+    [0.8, { drop: 0, thigh: -0.4, calf: 0.5, foot: 0, spine: 0.1, head: 0, arm: -1.6, fore: -0.4 }],
+    [0.87, { drop: 0.17, thigh: -0.7, calf: 1.3, foot: -0.6, spine: 0.3, head: 0.1, arm: -1, fore: -0.3 }],
+    [1, STAND],
+  ];
+  const AIR = [0.28, 0.87]; // the part of the flip when his feet are off the ground
+  const pose = { ...STAND };
+  function flipPose(p) {
+    let i = 0;
+    while (i < FLIP_KEYS.length - 2 && p > FLIP_KEYS[i + 1][0]) i++;
+    const [t0, a] = FLIP_KEYS[i], [t1, b] = FLIP_KEYS[i + 1];
+    const s = THREE.MathUtils.smoothstep(p, t0, t1);
+    for (const k in pose) pose[k] = a[k] + (b[k] - a[k]) * s;
+    return pose;
+  }
+  function backflip() {
+    if (!model || flip.t >= 0) return;
+    waveAction?.stop();
+    flip.t = 0;
+    speechEl.classList.add("hush");
+  }
+  function stepFlip(dt) {
+    if (flip.t < 0) return;
+    flip.t += dt;
+    const p = Math.min(1, flip.t / flip.dur);
+    const k = flipPose(p);
+    turn(bones.spine_01, k.spine * 0.5, 0, 0);
+    turn(bones.spine_02, k.spine * 0.5, 0, 0);
+    turn(bones.head, k.head, 0, 0);
+    for (const s of ["l", "r"]) {
+      turn(bones[`thigh_${s}`], k.thigh, 0, 0);
+      turn(bones[`calf_${s}`], k.calf, 0, 0);
+      turn(bones[`foot_${s}`], k.foot, 0, 0);
+      turn(bones[`upperarm_${s}`], k.arm, 0, 0);
+      turn(bones[`lowerarm_${s}`], k.fore, 0, 0);
+    }
+    let lift = 0, spin = 0;
+    if (p > AIR[0] && p < AIR[1]) {
+      const u = (p - AIR[0]) / (AIR[1] - AIR[0]);
+      lift = catHeight * 0.35 * 4 * u * (1 - u);
+      // one full turn backwards, spinning fastest while tucked
+      spin = -Math.PI * 2 * (u - (0.6 * Math.sin(Math.PI * 2 * u)) / (Math.PI * 2));
+    }
+    rig.position.y = flipPivot.y - k.drop * legLen * MOTION + lift * MOTION;
+    rig.rotation.x = reduceMotion ? 0 : spin;
+    // turn a little sideways for the flip so it reads clearly from the front, then face the visitor again
+    rig.rotation.y = reduceMotion ? 0 : -0.75 * (THREE.MathUtils.smoothstep(p, 0, 0.22) - THREE.MathUtils.smoothstep(p, 0.86, 1));
+    if (p >= 1) {
+      flip.t = -1;
+      rig.position.copy(flipPivot);
+      rig.rotation.set(0, 0, 0);
+      speechEl.classList.remove("hush");
+    }
+    rig.updateMatrixWorld(true);
   }
 
   /* ═════════ speech bubble ═════════ */
@@ -615,7 +702,7 @@ Sir Whiskerton: Oh. Well... sit with me a minute and tell me about it. Not that 
     return true;
   }
   function placeSpeech() {
-    if (!model || speechEl.hidden || !bones.head) return;
+    if (!model || speechEl.hidden || !bones.head || flip.t >= 0) return; // the bubble stays put during a backflip
     bones.head.getWorldPosition(_v);
     _v.y += headToTop;
     _v.project(camera);
@@ -642,7 +729,9 @@ Sir Whiskerton: Oh. Well... sit with me a minute and tell me about it. Not that 
     if (model) {
       for (const [b, q] of rest) b.quaternion.copy(q);
       mixer.update(dt);
-      model.updateMatrixWorld(true);
+      rig.position.copy(flipPivot); // pose him standing upright; a backflip moves and spins him afterwards
+      rig.rotation.set(0, 0, 0);
+      rig.updateMatrixWorld(true);
       const k = 1 - Math.exp(-dt * 4);
       anim.think += ((anim.state === "thinking" ? 1 : 0) - anim.think) * k;
       anim.talk += ((anim.state === "talking" ? 1 : 0) - anim.talk) * k;
@@ -674,6 +763,7 @@ Sir Whiskerton: Oh. Well... sit with me a minute and tell me about it. Not that 
         const s = Math.sin(t * speed - i * 0.45);
         turn(bones[`tail_${String(i).padStart(2, "0")}`], Math.cos(t * speed * 0.7 - i * 0.4) * 0.015, s * (0.035 + 0.02 * anim.think), 0);
       }
+      stepFlip(dt);
     }
     controls.update();
     renderer.render(scene, camera);
@@ -933,10 +1023,12 @@ Sir Whiskerton: Oh. Well... sit with me a minute and tell me about it. Not that 
     if (!text || busy || brain.state !== "ready") return;
     showNotice("");
     const previousLine = lastCatLine();
-    history.push({ role: "user", content: text });
+    const flips = FLIP_WORDS.test(text);
+    history.push(flips ? { role: "user", content: text, flip: true } : { role: "user", content: text });
     save();
     render();
-    if (GREETING.test(text)) wave();
+    if (flips) backflip();
+    else if (GREETING.test(text)) wave();
 
     sayTyping();
     const ctl = new AbortController();
@@ -948,7 +1040,8 @@ Sir Whiskerton: Oh. Well... sit with me a minute and tell me about it. Not that 
     let reply = "";
     let keepUserTurn = true;
     try {
-      const turns = history.slice(-MAX_TURNS);
+      // the AI only learns he did a backflip from a note added to that message
+      const turns = history.slice(-MAX_TURNS).map((m) => ({ role: m.role, content: m.flip ? m.content + FLIP_NOTE : m.content }));
       while (turns.length && turns[0].role !== "user") turns.shift();
       const stream = await brain.engine.chat.completions.create({
         messages: [{ role: "system", content: systemPrompt() }, ...turns],
@@ -1047,7 +1140,7 @@ Sir Whiskerton: Oh. Well... sit with me a minute and tell me about it. Not that 
   checkBrain();
 
   // for automated testing only
-  window.__whiskerton = { brain, send, get history() { return history; }, get speech() { return talk.target; }, get busy() { return !!busy; } };
+  window.__whiskerton = { brain, send, backflip, get flipping() { return flip.t >= 0; }, get history() { return history; }, get speech() { return talk.target; }, get busy() { return !!busy; } };
 </script>
 </body>
 </html>
