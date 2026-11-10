@@ -395,6 +395,7 @@ Your personality:
 - You dislike being woken up, dogs, Mondays and being called "kitty". You secretly love sunny windowsills, fish pie and chin scratches.
 - You carry a rapier (a thin musketeer sword), but it only comes out for your sword trick.
 - Your tricks are a backflip and a sword trick (you toss your rapier spinning into the air and catch it). You also wave when someone says hello. You told the visitor you have a couple of tricks to show them, and one of them is a backflip. If they ask what your tricks are, name the backflip and the sword trick.
+- When someone compliments you, you show off with your sword trick (you can't help it), then act as if it was nothing.
 - When a visitor's message ends with a note saying you just did a trick, you really did it on screen. Never claim you did a trick otherwise; if they want to see one, tell them to ask for it.
 
 How you reply:
@@ -620,6 +621,15 @@ Sir Whiskerton: Oh. Well... sit with me a minute and tell me about it. Not that 
   const SWORD_NOTE = "\n\n(You just tossed your sword into the air, caught it and struck a pose. React in one short sentence: show off a little.)";
   const OTHER_TRICK = /\b(other|another|second|next|more|different|else)\b[^.?!]*\btricks?\b|\btricks?\b[^.?!]*\b(other|another|else|next)\b/i;
   let lastTrick = null;
+  // a compliment makes him show off with the sword trick (unless they asked for a particular trick)
+  const NICE = "cool|awesome|amazing|great|handsome|cute|nice|brave|smart|clever|strong|beautiful|gorgeous|stylish|dashing|elegant|good[- ]looking|funny|adorable|fluffy|majestic|talented|skilled|impressive|wonderful|fantastic|lovely|sweet|kind|charming|the best|incredible|epic";
+  const COMPLIMENT = new RegExp(
+    `\\b(you'?re|you are|you look|ur|u r|what an?|such an?|so|very|really|pretty|super)\\b[^.?!]{0,25}\\b(${NICE})\\b` +
+    `|\\b(i (really )?(love|like|adore)|love)\\s+(you|your|ur)\\b` +
+    `|\\b(nice|cool|great|awesome|lovely|beautiful|fancy|amazing|fine|epic)\\s+(hat|feather|coat|sword|outfit|boots|tail|whiskers|fur|tricks?|moves|backflip|flip|style)\\b` +
+    `|\\b(well done|good job|bravo|nice one|you rock|brilliant|wonderful|fantastic|impressive|amazing|awesome)\\b|かっこいい|かわいい|すごい|素敵`, "i");
+  const isCompliment = (t) => COMPLIMENT.test(t) && !/\bnot\b|n't\b|\bnever\b/i.test(t) && !/\?\s*$/.test(t); // questions aren't compliments
+  const COMPLIMENT_NOTE = "\n\n(The visitor just complimented you, so you showed off your sword trick: you tossed your sword into the air, caught it and struck a pose. React in one short sentence: pleased, but pretend you don't care.)";
   // which trick a line is about: the one it names, otherwise the one he hasn't just done (backflip first)
   function pickTrick(line = "") {
     const sw = /sword|rapier/i.test(line), fl = /flip/i.test(line);
@@ -1115,14 +1125,16 @@ Sir Whiskerton: Oh. Well... sit with me a minute and tell me about it. Not that 
     showNotice("");
     const previousLine = lastCatLine();
     // "Do a backflip!", or a "yes" to his "...one of them is a backflip. Want to see?"
-    const trick = FLIP_WORDS.test(text) ? "backflip"
+    let trick = FLIP_WORDS.test(text) ? "backflip"
       : SWORD_WORDS.test(text) && swordAction ? "sword"
       : OTHER_TRICK.test(text) ? (lastTrick === "sword" ? "backflip" : swordAction ? "sword" : "backflip")
       : YES.test(text) && OFFERED_FLIP.test(previousLine) ? pickTrick(previousLine)
       : /\btricks?\b/i.test(text) && /\b(show|do|see|watch|perform)\b/i.test(text) ? pickTrick()
       : null;
+    const complimented = !trick && !!swordAction && isCompliment(text);
+    if (complimented) trick = "sword";
     const flips = trick === "backflip";
-    history.push(trick ? { role: "user", content: text, flip: flips, trick } : { role: "user", content: text });
+    history.push(trick ? { role: "user", content: text, flip: flips, trick, ...(complimented ? { why: "compliment" } : {}) } : { role: "user", content: text });
     save();
     render();
     if (trick === "backflip") backflip();
@@ -1142,7 +1154,8 @@ Sir Whiskerton: Oh. Well... sit with me a minute and tell me about it. Not that 
       // the AI only learns he did a backflip from a note added to that message
       const turns = history.slice(-MAX_TURNS).map((m) => ({
         role: m.role,
-        content: m.flip ? m.content + FLIP_NOTE : m.trick === "sword" ? m.content + SWORD_NOTE : m.content,
+        content: m.flip ? m.content + FLIP_NOTE
+          : m.trick === "sword" ? m.content + (m.why === "compliment" ? COMPLIMENT_NOTE : SWORD_NOTE) : m.content,
       }));
       while (turns.length && turns[0].role !== "user") turns.shift();
       const stream = await brain.engine.chat.completions.create({
