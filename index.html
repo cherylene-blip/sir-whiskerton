@@ -636,6 +636,27 @@ Sir Whiskerton: Oh, I'm sorry to hear that. Sit with me a while and tell me all 
     `|かっこいい|かわいい|すごい|素敵|すてき`, "i");
   const isCompliment = (t) => COMPLIMENT.test(t) && !/\bnot\b|n't\b|\bnever\b/i.test(t) && !/\?\s*$/.test(t); // questions aren't compliments
   const COMPLIMENT_NOTE = "\n\n(The visitor just complimented you, so you showed off your sword trick: you tossed your sword into the air, caught it and struck a pose. React in one short sentence: thank them graciously, with a little flourish.)";
+  // a compliment always gets a charming thank-you to open his reply (the page adds it, so it never goes missing);
+  // the AI then adds one short line of its own
+  const THANKS = ["Why, thank you, dear!", "Oh, you flatter me, dear!", "How very kind of you, my dear!", "You're too kind, dear!",
+    "Why, you'll make me blush under all this fur!", "Merci, my dear friend!", "Oh, you charmer, thank you!", "Ah, a compliment! You've made my day, dear."];
+  let lastThanks = -1;
+  function pickThanks() {
+    let i = lastThanks < 0 ? 0 : Math.floor(Math.random() * (THANKS.length - 1)); // the very first one is "Why, thank you, dear!"
+    if (lastThanks >= 0 && i >= lastThanks) i++;                                    // never the same line twice in a row
+    lastThanks = i;
+    return THANKS[i];
+  }
+  // the AI sometimes thanks them again anyway: drop a leading thank-you sentence from its part
+  const dropThanks = (s) => s.replace(/^\s*((oh|why|well|ah),?\s*)*(thank(s| you)|merci)[^.!?]*[.!?]+\s*/i, "");
+  // the note the AI sees on a visitor's message: what he just did on screen, and how to answer
+  function noteFor(m) {
+    if (m.thanks) {
+      const did = m.flip ? "You just did a backflip on screen. " : m.trick === "sword" ? "You just showed off your sword trick on screen. " : "";
+      return `\n\n(The visitor just complimented you. ${did}You already began your reply with "${m.thanks}" Now add one short, charming sentence, and don't thank them again.)`;
+    }
+    return m.flip ? FLIP_NOTE : m.trick === "sword" ? (m.why === "compliment" ? COMPLIMENT_NOTE : SWORD_NOTE) : "";
+  }
   // which trick a line is about: the one it names, otherwise the one he hasn't just done (backflip first)
   function pickTrick(line = "") {
     const sw = /sword|rapier/i.test(line), fl = /flip/i.test(line);
@@ -1137,10 +1158,13 @@ Sir Whiskerton: Oh, I'm sorry to hear that. Sit with me a while and tell me all 
       : YES.test(text) && OFFERED_FLIP.test(previousLine) ? pickTrick(previousLine)
       : /\btricks?\b/i.test(text) && /\b(show|do|see|watch|perform)\b/i.test(text) ? pickTrick()
       : null;
-    const complimented = !trick && !!swordAction && isCompliment(text);
-    if (complimented) trick = "sword";
+    const complimented = isCompliment(text);
+    if (!trick && complimented && swordAction) trick = "sword";  // a compliment makes him show off
+    const thanks = complimented ? pickThanks() : "";
     const flips = trick === "backflip";
-    history.push(trick ? { role: "user", content: text, flip: flips, trick, ...(complimented ? { why: "compliment" } : {}) } : { role: "user", content: text });
+    history.push(trick || thanks
+      ? { role: "user", content: text, flip: flips, trick, ...(complimented ? { why: "compliment", thanks } : {}) }
+      : { role: "user", content: text });
     save();
     render();
     if (trick === "backflip") backflip();
@@ -1158,11 +1182,7 @@ Sir Whiskerton: Oh, I'm sorry to hear that. Sit with me a while and tell me all 
     let keepUserTurn = true;
     try {
       // the AI only learns he did a backflip from a note added to that message
-      const turns = history.slice(-MAX_TURNS).map((m) => ({
-        role: m.role,
-        content: m.flip ? m.content + FLIP_NOTE
-          : m.trick === "sword" ? m.content + (m.why === "compliment" ? COMPLIMENT_NOTE : SWORD_NOTE) : m.content,
-      }));
+      const turns = history.slice(-MAX_TURNS).map((m) => ({ role: m.role, content: m.role === "user" ? m.content + noteFor(m) : m.content }));
       while (turns.length && turns[0].role !== "user") turns.shift();
       const stream = await brain.engine.chat.completions.create({
         messages: [{ role: "system", content: systemPrompt() }, ...turns],
@@ -1177,12 +1197,14 @@ Sir Whiskerton: Oh, I'm sorry to hear that. Sit with me a while and tell me all 
       });
       ctl.signal.addEventListener("abort", () => brain.engine?.interruptGenerate(), { once: true });
       let raw = "", reason = null;
+      const lead = thanks ? thanks + " " : "";
       for await (const chunk of stream) {
         const c = chunk.choices?.[0];
         raw += c?.delta?.content || "";
         reason = c?.finish_reason || reason;
-        const soFar = tidy(raw);
-        if (!soFar) continue;
+        const body = thanks ? dropThanks(tidy(raw)) : tidy(raw);
+        if (!body) continue;
+        const soFar = lead + body;
         if (!reply) {
           setState("talking");
           say(soFar, { pop: true });
@@ -1194,6 +1216,9 @@ Sir Whiskerton: Oh, I'm sorry to hear that. Sit with me a while and tell me all 
       if (ctl.signal.aborted) {
         if (reply) { reply += "…"; say(reply, { instant: true }); }
         else { keepUserTurn = false; say(previousLine, { instant: true }); }
+      } else if (!reply && thanks) {
+        reply = thanks; // the AI only thanked them (or said nothing): the thank-you alone is answer enough
+        say(reply, { pop: true });
       } else if (!reply) {
         keepUserTurn = false;
         say("Pardon me, my friend, I'm lost for words. Could you ask that another way?", { pop: true });
@@ -1204,6 +1229,7 @@ Sir Whiskerton: Oh, I'm sorry to hear that. Sit with me a while and tell me all 
     } catch (e) {
       console.error(e);
       if (reply) say(reply + " …", { instant: true });
+      else if (thanks) { reply = thanks; say(reply, { instant: true }); }
       else { keepUserTurn = false; say(previousLine, { instant: true }); }
       const msg = String(e?.message || e);
       showNotice(/context|too long|exceed/i.test(msg)
