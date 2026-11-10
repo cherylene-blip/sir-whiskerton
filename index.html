@@ -380,8 +380,9 @@
   /* ═════════ THE CAT'S CHARACTER SHEET — edit to change who the cat is ═════════ */
   const CHARACTER = {
     name: "Sir Whiskerton",
-    greeting: "Hmph. Another visitor. I'm Sir Whiskerton, and I was napping. What do you want?",
-    wakeLine: "Ugh, fine, I'm awake. What do you want?",
+    greeting: "Hey, I'm Sir Whiskerton. I have a couple of tricks to show you, and one of them is a backflip. Want to see?",
+    // shown once his brain wakes up, so it keeps the same offer (a "yes" to it gets the backflip)
+    wakeLine: "Ugh, fine, I'm awake. I have a couple of tricks to show you, and one of them is a backflip. Want to see?",
     suggestions: ["Do a backflip!", "Why are you so grumpy?", "Tell me about your hat"],
     // Small on-device models follow short, direct instructions and examples best.
     rules: `You are Sir Whiskerton, a grumpy but kind cat musketeer. You are a 3D character on a web page, and your replies appear in a speech bubble above your head. People chat with you just for fun.
@@ -392,7 +393,8 @@ Your personality:
 - Never mean: never insult, mock or upset the visitor. If someone is sad or worried, be warm and gentle.
 - You are proud of your outfit: a brown musketeer hat with a big pink feather on it, a long brown-and-black coat with gold buttons, gloves and a belt with a gold buckle. You are a dark grey cat.
 - You dislike being woken up, dogs, Mondays and being called "kitty". You secretly love sunny windowsills, fish pie and chin scratches.
-- You can do backflips, but only when the visitor asks. When a visitor's message ends with a note saying you just did a backflip, you really did one on screen. Otherwise, don't mention backflips.
+- Your tricks are a backflip and a wave (you wave when someone says hello). You told the visitor you have a couple of tricks to show them, and one of them is a backflip. If they ask what your tricks are, name the backflip and the wave.
+- When a visitor's message ends with a note saying you just did a backflip, you really did one on screen. Never claim you did a backflip otherwise; if they want to see one, tell them to ask for it.
 
 How you reply:
 - Always in English.
@@ -1025,6 +1027,18 @@ Sir Whiskerton: Oh. Well... sit with me a minute and tell me about it. Not that 
   });
 
   const GREETING = /^(hi|hello|hey|hiya|howdy|bonjour|salut|hola|ciao|greetings|good (morning|afternoon|evening)|こんにちは|やあ|おはよう)\b/i;
+  // a "yes" to his offer: short ("yes please", "sure!") or about seeing it ("yeah, I'd love to see it"),
+  // so "ok, what's your name?" or "please tell me about your hat" don't count
+  const YES_WORDS = /^(yes|yeah|yea|yep|yup|ya|sure|ok|okay|alright|please|show me|go on|go ahead|do it|let'?s see|i do|absolutely|of course|why not)\b|^(はい|うん|見たい)/i;
+  const YES = {
+    test: (t) => YES_WORDS.test(t) && !/\?\s*$/.test(t) && (t.split(/\s+/).length <= 4 || /\b(see|show|watch|do it|go)\b|見/i.test(t)),
+  };
+  // his line offered the flip: mentions it (or a trick) AND asks whether to show it ("Want to see?"),
+  // so "There. A backflip. Happy now?" followed by "sure" doesn't start another one
+  const OFFERED_FLIP = {
+    test: (line) => /backflip|flip|trick|another one/i.test(line) && /\?\s*$/.test(line)
+      && /(want|wanna|like) to see|show you|shall i|should i|another one|ready\?/i.test(line),
+  };
 
   function systemPrompt() {
     return `${CHARACTER.rules}\n\nYou already greeted this visitor with: "${CHARACTER.greeting}"`;
@@ -1054,7 +1068,8 @@ Sir Whiskerton: Oh. Well... sit with me a minute and tell me about it. Not that 
     if (!text || busy || brain.state !== "ready") return;
     showNotice("");
     const previousLine = lastCatLine();
-    const flips = FLIP_WORDS.test(text);
+    // "Do a backflip!", or a "yes" to his "...one of them is a backflip. Want to see?"
+    const flips = FLIP_WORDS.test(text) || (YES.test(text) && OFFERED_FLIP.test(previousLine));
     history.push(flips ? { role: "user", content: text, flip: true } : { role: "user", content: text });
     save();
     render();
