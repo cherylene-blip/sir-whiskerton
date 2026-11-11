@@ -395,7 +395,7 @@ Your personality:
 - You are proud of your outfit: a brown musketeer hat with a big pink feather on it, a long brown-and-black coat with gold buttons, gloves and a belt with a gold buckle. You are a dark grey cat.
 - You love sunny windowsills, fish pie and chin scratches. You are not fond of dogs or Mondays, and you'd rather not be called "kitty", but you say so with a smile.
 - You carry a rapier (a thin musketeer sword), but it only comes out for your sword trick.
-- Your tricks are a backflip and a sword trick (you toss your rapier spinning into the air and catch it). You also greet people with a slow, gentlemanly bow when they say hello. You told the visitor you have a couple of tricks to show them, and one of them is a backflip. If they ask what your tricks are, name the backflip and the sword trick.
+- Your tricks are a backflip and a sword trick (you toss your rapier spinning into the air and catch it). You also greet people with a slow, gentlemanly bow when they say hello, and you bow whenever someone asks you to. You told the visitor you have a couple of tricks to show them, and one of them is a backflip. If they ask what your tricks are, name the backflip and the sword trick.
 - When someone compliments you, you thank them graciously and show off with your sword trick.
 - When a visitor's message ends with a note saying you just did a trick, you really did it on screen. Never claim you did a trick otherwise; if they want to see one, tell them to ask for it.
 
@@ -573,14 +573,30 @@ Sir Whiskerton: Oh, I'm sorry to hear that. Sit with me a while and tell me all 
 
   // his greeting: a slow gentleman's bow (the wave only if the model has no bow clip)
   const bowing = () => !!bowAction?.isRunning();
-  function greet() {
-    if (reduceMotion || flip.t >= 0) return;
+  function playBow() {
     if (bowAction) {
       if (bowing()) return; // already bowing: let it finish instead of snapping back upright
       bowAction.reset().setEffectiveWeight(1).fadeIn(0.25).play();
     } else if (waveAction) {
       waveAction.reset().setEffectiveWeight(1).fadeIn(0.35).play();
     }
+  }
+  function greet() {
+    if (reduceMotion || flip.t >= 0) return;
+    playBow();
+  }
+  // a bow the visitor asked for: also with reduced motion (they asked), and if a trick is still
+  // playing he bows as soon as it ends
+  let bowAfterTrick = false;
+  function bow() {
+    if (!model) return;
+    if (flip.t >= 0) { bowAfterTrick = true; return; }
+    playBow();
+  }
+  function bowIfAsked() {
+    if (!bowAfterTrick) return;
+    bowAfterTrick = false;
+    bow();
   }
   function stopGreeting() {
     waveAction?.stop();
@@ -669,13 +685,22 @@ Sir Whiskerton: Oh, I'm sorry to hear that. Sit with me a while and tell me all 
   }
   // the AI sometimes thanks them again anyway: drop a leading thank-you sentence from its part
   const dropThanks = (s) => s.replace(/^\s*((oh|why|well|ah),?\s*)*(thank(s| you)|merci)[^.!?]*[.!?]+\s*/i, "");
+  // he bows whenever a visitor asks him to ("Take a bow!", "can you bow?", "お辞儀して"),
+  // but not for a bow tie, a bow and arrow, or "don't bow"
+  const BOW_WORDS = /\b(bow(s|ed|ing)?|curtsy|curtsey)\b|お辞儀|おじぎ/i;
+  const NOT_BOW = /\bbow[- ]?ties?\b|\bbows? (and|&|n) arrows?\b|(?<!why )\b(don'?t|do not|stop|no more|never|quit)\b[^.?!]{0,15}\bbow/i;
+  const asksBow = (t) => BOW_WORDS.test(t) && !NOT_BOW.test(t);
+  const BOW_NOTE = "\n\n(You just gave the visitor a slow, gentlemanly bow. React in one short sentence, with charm.)";
   // the note the AI sees on a visitor's message: what he just did on screen, and how to answer
   function noteFor(m) {
     if (m.thanks) {
-      const did = m.flip ? "You just did a backflip on screen. " : m.trick === "sword" ? "You just showed off your sword trick on screen. " : "";
+      let did = m.flip ? "You just did a backflip on screen. " : m.trick === "sword" ? "You just showed off your sword trick on screen. " : "";
+      if (m.bow) did += did ? "Then you took a slow, gentlemanly bow. " : "You just gave them a slow, gentlemanly bow on screen. ";
       return `\n\n(The visitor just complimented you. ${did}You already began your reply with "${m.thanks}" Now add one short, charming sentence, and don't thank them again.)`;
     }
-    return m.flip ? FLIP_NOTE : m.trick === "sword" ? (m.why === "compliment" ? COMPLIMENT_NOTE : SWORD_NOTE) : "";
+    const note = m.flip ? FLIP_NOTE : m.trick === "sword" ? (m.why === "compliment" ? COMPLIMENT_NOTE : SWORD_NOTE) : "";
+    if (!m.bow) return note;
+    return note ? note.replace(". React", ", then took a slow, gentlemanly bow. React") : BOW_NOTE;
   }
   // which trick a line is about: the one it names, otherwise the one he hasn't just done (backflip first)
   function pickTrick(line = "") {
@@ -749,6 +774,7 @@ Sir Whiskerton: Oh, I'm sorry to hear that. Sit with me a while and tell me all 
         }
         rig.rotation.set(0, 0, 0);
         speechEl.classList.remove("hush");
+        bowIfAsked();
       }
       rig.updateMatrixWorld(true);
       return;
@@ -781,6 +807,7 @@ Sir Whiskerton: Oh, I'm sorry to hear that. Sit with me a while and tell me all 
       rig.position.copy(flipPivot);
       rig.rotation.set(0, 0, 0);
       speechEl.classList.remove("hush");
+      bowIfAsked();
     }
     rig.updateMatrixWorld(true);
   }
@@ -1181,18 +1208,21 @@ Sir Whiskerton: Oh, I'm sorry to hear that. Sit with me a while and tell me all 
       : YES.test(text) && OFFERED_FLIP.test(previousLine) ? pickTrick(previousLine)
       : /\btricks?\b/i.test(text) && /\b(show|do|see|watch|perform)\b/i.test(text) ? pickTrick()
       : null;
+    const wantsBow = asksBow(text);
     const complimented = isCompliment(text);
-    if (!trick && complimented && swordAction) trick = "sword";  // a compliment makes him show off
+    // a compliment makes him show off (but "what a lovely bow!" just gets another bow)
+    if (!trick && complimented && swordAction && !wantsBow) trick = "sword";
     const thanks = complimented ? pickThanks() : "";
     const flips = trick === "backflip";
-    history.push(trick || thanks
-      ? { role: "user", content: text, flip: flips, trick, ...(complimented ? { why: "compliment", thanks } : {}) }
+    history.push(trick || thanks || wantsBow
+      ? { role: "user", content: text, flip: flips, trick, ...(wantsBow ? { bow: true } : {}), ...(complimented ? { why: "compliment", thanks } : {}) }
       : { role: "user", content: text });
     save();
     render();
     if (trick === "backflip") backflip();
     else if (trick === "sword") swordTrick();
-    else if (GREETING.test(text)) greet();
+    if (wantsBow) bow();                  // with a trick, he bows right after it
+    else if (!trick && GREETING.test(text)) greet();
 
     sayTyping();
     const ctl = new AbortController();
@@ -1295,6 +1325,7 @@ Sir Whiskerton: Oh, I'm sorry to hear that. Sit with me a while and tell me all 
 
   $("new-chat").addEventListener("click", async () => {
     busy?.abort();
+    bowAfterTrick = false;
     history = [];
     save();
     showNotice("");
@@ -1310,7 +1341,7 @@ Sir Whiskerton: Oh, I'm sorry to hear that. Sit with me a while and tell me all 
   checkBrain();
 
   // for automated testing only
-  window.__whiskerton = { brain, send, backflip, swordTrick, greet, get bowing() { return bowing(); }, get flipping() { return flip.t >= 0; }, get trick() { return flip.t >= 0 ? flip.kind : null; },
+  window.__whiskerton = { brain, send, backflip, swordTrick, greet, bow, asksBow, get bowing() { return bowing(); }, get flipping() { return flip.t >= 0; }, get trick() { return flip.t >= 0 ? flip.kind : null; },
     get swordShown() { return !!swordProp?.visible; }, get history() { return history; }, get speech() { return talk.target; }, get busy() { return !!busy; } };
 </script>
 </body>
